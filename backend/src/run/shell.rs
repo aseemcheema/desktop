@@ -3,6 +3,7 @@ use std::path::Path;
 use std::{process::Stdio, sync::Arc};
 
 use atuin_common::utils::uuid_v7;
+#[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -26,8 +27,24 @@ pub struct ShellProps {
 
 #[tauri::command]
 pub async fn term_process(pid: u32) -> Result<(), String> {
-    nix::sys::signal::kill(Pid::from_raw(pid as i32), nix::sys::signal::SIGTERM)
-        .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        nix::sys::signal::kill(Pid::from_raw(pid as i32), nix::sys::signal::SIGTERM)
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(windows)]
+    {
+        // Best-effort: gracefully kill the process on Windows
+        // Try TERM via Child::kill fallback if we had handle; here use taskkill
+        use std::process::Command as StdCommand;
+        let status = StdCommand::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"]) // terminate tree, force if needed
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("Failed to terminate process {pid}: {status}"));
+        }
+    }
 
     Ok(())
 }

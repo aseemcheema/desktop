@@ -1,0 +1,62 @@
+name: build-windows-msi
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      CI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Tauri uses MSVC toolchain on Windows
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            backend/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install system deps (WiX)
+        shell: pwsh
+        run: |
+          choco install wix --version=3.14.1.8606 -y
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build MSI (tauri)
+        run: pnpm tauri build --target x86_64-pc-windows-msvc
+
+      - name: Archive MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: |
+            backend/target/**/bundle/msi/*.msi
+            backend/target/**/bundle/**/*.zip

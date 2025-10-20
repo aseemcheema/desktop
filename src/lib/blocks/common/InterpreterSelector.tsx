@@ -4,44 +4,54 @@ import { invoke } from "@tauri-apps/api/core";
 import { PlusIcon, Pencil as PencilIcon, X as XIcon } from "lucide-react";
 import { Settings } from "@/state/settings.ts";
 
+// Lightweight runtime OS check
+const isWindows = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent || "");
+
 // Supported shells with their possible paths
 export const supportedShells = [
+  // Unix-like defaults
   { name: "bash", paths: ["/bin/bash"], defaultArgs: "-lc", sshArgs: "-l" },
   { name: "zsh", paths: ["/bin/zsh"], defaultArgs: "-lc", sshArgs: "-l" },
   { name: "fish", paths: ["/usr/bin/fish", "/usr/local/bin/fish", "/opt/homebrew/bin/fish"], defaultArgs: "-c", sshArgs: "" },
   { name: "python3", paths: ["/usr/bin/python3", "/usr/local/bin/python3"], defaultArgs: "-c", sshArgs: "" },
   { name: "node", paths: ["/usr/bin/node", "/usr/local/bin/node"], defaultArgs: "-e", sshArgs: "" },
   { name: "sh", paths: ["/bin/sh"], defaultArgs: "-ic", sshArgs: "-i" },
+  // Windows shells (listed always; availability checks below are OS-aware)
+  { name: "powershell", paths: ["C:\\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"], defaultArgs: "-NoProfile -ExecutionPolicy Bypass -Command", sshArgs: "-NoProfile -ExecutionPolicy Bypass -Command" },
+  { name: "pwsh", paths: ["C:\\\Program Files\\PowerShell\\7\\pwsh.exe", "C:\\\Program Files (x86)\\PowerShell\\7\\pwsh.exe"], defaultArgs: "-NoProfile -ExecutionPolicy Bypass -Command", sshArgs: "-NoProfile -ExecutionPolicy Bypass -Command" },
+  { name: "cmd", paths: ["C:\\\Windows\\System32\\cmd.exe"], defaultArgs: "/S /C", sshArgs: "/S /C" },
 ];
 
 // Helper to build interpreter command string
 export const buildInterpreterCommand = (interpreterName: string, isSSH = false) => {
-  // Find the shell configuration
-  const shellConfig = supportedShells.find(s => s.name === interpreterName);
+  // Find the shell configuration (by canonical name or exe name)
+  const nameLower = (interpreterName || "").toLowerCase();
+  const normalizedName = nameLower.endsWith(".exe") ? nameLower.replace(/\.exe$/, "") : nameLower;
+  const shellConfig = supportedShells.find(s => s.name.toLowerCase() === normalizedName);
 
-  if (shellConfig) {
-    if (isSSH) {
-      // For SSH execution
-      if (shellConfig.paths[0].startsWith('/bin/')) {
-        // Use absolute path for system shells
-        return `${shellConfig.paths[0]} ${shellConfig.sshArgs}`.trim();
-      } else {
-        // Use env for other shells
-        return `/usr/bin/env ${shellConfig.name}${shellConfig.sshArgs ? ' ' + shellConfig.sshArgs : ''}`;
-      }
-    } else {
-      // For local execution
-      if (shellConfig.paths[0].startsWith('/bin/')) {
-        // Use absolute path for system shells
-        return `${shellConfig.paths[0]} ${shellConfig.defaultArgs}`.trim();
-      } else {
-        // Use env for other shells
-        return `/usr/bin/env ${shellConfig.name}${shellConfig.defaultArgs ? ' ' + shellConfig.defaultArgs : ''}`;
-      }
+  // Windows behavior: never prefix with /usr/bin/env; use well-known tools directly
+  if (isWindows) {
+    if (shellConfig) {
+      const args = isSSH ? shellConfig.sshArgs : shellConfig.defaultArgs;
+      // Prefer the canonical tool name; absolute path not necessary for powershell/cmd, pwsh assumed on PATH if installed
+      return `${shellConfig.name}${args ? " " + args : ""}`.trim();
     }
+    // Unknown interpreter on Windows: pass as-is (no env prefix)
+    return interpreterName;
   }
 
-  // Fallback for unknown shells
+  // Unix-like behavior
+  if (shellConfig) {
+    const args = isSSH ? shellConfig.sshArgs : shellConfig.defaultArgs;
+    if (shellConfig.paths[0].startsWith("/bin/")) {
+      // Use absolute path for system shells
+      return `${shellConfig.paths[0]}${args ? " " + args : ""}`.trim();
+    }
+    // Use env for other shells so they resolve via PATH
+    return `/usr/bin/env ${shellConfig.name}${args ? " " + args : ""}`.trim();
+  }
+
+  // Fallback for unknown shells on Unix-like systems
   return `/usr/bin/env ${interpreterName}`;
 };
 
@@ -100,6 +110,12 @@ const InterpreterSelector: React.FC<InterpreterSelectorProps> = ({
         for (const shell of supportedShells) {
           // Skip bash and sh as they're always available
           if (shell.name === "bash" || shell.name === "sh") {
+            shellStatus[shell.name] = true;
+            continue;
+          }
+
+          // On Windows, treat core shells as available
+          if (isWindows && (shell.name === "powershell" || shell.name === "cmd")) {
             shellStatus[shell.name] = true;
             continue;
           }

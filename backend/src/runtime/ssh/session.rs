@@ -5,7 +5,6 @@ use bytes::Bytes;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::sync::{mpsc::Sender, oneshot};
 use tokio::time::timeout;
@@ -352,55 +351,69 @@ impl Session {
     }
 
     pub async fn agent_auth(&mut self, username: &str) -> Result<bool> {
-        // Try to connect to SSH agent, using custom IdentityAgent if specified
-        let agent_result = if let Some(ref identity_agent) = self.ssh_config.identity_agent {
-            log::debug!("Using custom IdentityAgent: {identity_agent}");
-            // Connect to custom agent socket
-            russh::keys::agent::client::AgentClient::connect_uds(identity_agent)
-                .await
-                .map_err(|_| russh::Error::NotAuthenticated)
-        } else {
-            // Use default SSH agent from environment
-            russh::keys::agent::client::AgentClient::connect_env()
-                .await
-                .map_err(|_| russh::Error::NotAuthenticated)
-        };
+        // On non-Unix platforms, skip SSH agent auth (no UDS)
+        #[cfg(not(unix))]
+        {
+            log::debug!("SSH agent authentication not supported on this platform; skipping");
+            return Ok(false);
+        }
 
-        match agent_result {
-            Ok(mut agent) => match agent.request_identities().await {
-                Ok(keys) => {
-                    log::debug!("Found {} keys in SSH agent", keys.len());
-                    for key in keys {
-                        match self
-                            .session
-                            .authenticate_publickey_with(username, key.clone(), None, &mut agent)
-                            .await
-                        {
-                            Ok(russh::client::AuthResult::Success) => {
-                                log::debug!("Successfully authenticated with SSH agent key");
-                                return Ok(true);
-                            }
-                            Ok(_) => {
-                                log::debug!("SSH agent key rejected by server");
-                                continue;
-                            }
-                            Err(e) => {
-                                log::debug!("Error trying SSH agent key: {e:?}");
-                                continue;
+        // Unix: connect to agent via IdentityAgent or SSH_AUTH_SOCK
+        #[cfg(unix)]
+        {
+            let sock_path = if let Some(ref identity_agent) = self.ssh_config.identity_agent {
+                log::debug!("Using custom IdentityAgent: {identity_agent}");
+                identity_agent.clone()
+            } else {
+                match std::env::var("SSH_AUTH_SOCK") {
+                    Ok(p) => p,
+                    Err(_) => {
+                        log::debug!("SSH_AUTH_SOCK not set; skipping agent auth");
+                        return Ok(false);
+                    }
+                }
+            };
+
+            let agent_result = russh::keys::agent::client::AgentClient::connect_uds(&sock_path)
+                .await
+                .map_err(|_| russh::Error::NotAuthenticated);
+
+            match agent_result {
+                Ok(mut agent) => match agent.request_identities().await {
+                    Ok(keys) => {
+                        log::debug!("Found {} keys in SSH agent", keys.len());
+                        for key in keys {
+                            match self
+                                .session
+                                .authenticate_publickey_with(username, key.clone(), None, &mut agent)
+                                .await
+                            {
+                                Ok(russh::client::AuthResult::Success) => {
+                                    log::debug!("Successfully authenticated with SSH agent key");
+                                    return Ok(true);
+                                }
+                                Ok(_) => {
+                                    log::debug!("SSH agent key rejected by server");
+                                    continue;
+                                }
+                                Err(e) => {
+                                    log::debug!("Error trying SSH agent key: {e:?}");
+                                    continue;
+                                }
                             }
                         }
+                        log::debug!("No SSH agent keys worked for authentication");
+                        Ok(false)
                     }
-                    log::debug!("No SSH agent keys worked for authentication");
-                    Ok(false)
-                }
+                    Err(e) => {
+                        log::debug!("Failed to request identities from SSH agent: {e}");
+                        Ok(false)
+                    }
+                },
                 Err(e) => {
-                    log::debug!("Failed to request identities from SSH agent: {e}");
+                    log::debug!("Failed to connect to SSH agent: {e}");
                     Ok(false)
                 }
-            },
-            Err(e) => {
-                log::debug!("Failed to connect to SSH agent: {e}");
-                Ok(false)
             }
         }
     }

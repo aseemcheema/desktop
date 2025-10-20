@@ -3,8 +3,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufReader, Read};
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use walkdir::{DirEntry, WalkDir};
 
@@ -54,13 +54,35 @@ pub fn find_files(path: &str, extension: &str) -> Result<Vec<FileInfo>, String> 
         let entry = entry.map_err(|e| e.to_string())?;
 
         if entry.file_name().to_string_lossy().ends_with(extension) {
-            let meta = entry.metadata().unwrap();
+            let meta = entry.metadata().map_err(|e| e.to_string())?;
 
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path().display().to_string();
-            let size = meta.size();
-            let modified = meta.mtime() as u64;
-            let checksum = sha256_digest(entry.path()).unwrap();
+
+            // File size (cross-platform)
+            #[cfg(unix)]
+            let size = {
+                use std::os::unix::fs::MetadataExt as _;
+                meta.size()
+            };
+            #[cfg(not(unix))]
+            let size = meta.len();
+
+            // Last modified time in seconds since UNIX_EPOCH (best-effort)
+            #[cfg(unix)]
+            let modified = {
+                use std::os::unix::fs::MetadataExt as _;
+                meta.mtime() as u64
+            };
+            #[cfg(not(unix))]
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let checksum = sha256_digest(entry.path()).map_err(|e| e.to_string())?;
 
             res.push(FileInfo {
                 name,

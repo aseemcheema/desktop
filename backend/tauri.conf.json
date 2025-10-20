@@ -32,8 +32,8 @@
       }
     },
     "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" },
       "wix": {
-        "version": "3",
         "language": "en-US"
       }
     },

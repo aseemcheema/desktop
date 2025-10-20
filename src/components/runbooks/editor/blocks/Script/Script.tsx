@@ -699,9 +699,11 @@ export const insertScript = (schema: any) => (editor: typeof schema.BlockNoteEdi
     let scriptBlocks = editor.document.filter((block: any) => block.type === "script");
     let name = `Script ${scriptBlocks.length + 1}`;
 
-    // Get default shell from settings
-    const defaultShell = await Settings.scriptShell();
-    const interpreter = defaultShell || "zsh";
+  // Get default shell from settings
+  const defaultShell = await Settings.scriptShell();
+  // Prefer PowerShell on Windows if no setting present, else fall back to zsh
+  const isWin = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent || "");
+  const interpreter = defaultShell || (isWin ? "powershell" : "zsh");
 
     editor.insertBlocks(
       [
